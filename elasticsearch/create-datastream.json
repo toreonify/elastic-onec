@@ -1,0 +1,87 @@
+{
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_replicas": 0
+      }
+    },
+    "mappings": {
+      "dynamic_templates": [],
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "Application": {
+          "type": "keyword"
+        },
+        "Comment": {
+          "type": "text"
+        },
+        "Computer": {
+          "type": "keyword"
+        },
+        "Data": {
+          "type": "text"
+        },
+        "Database": {
+          "type": "keyword"
+        },
+        "Event": {
+          "type": "keyword"
+        },
+        "Importance": {
+          "type": "keyword"
+        },
+        "Metadata": {
+          "type": "keyword"
+        },
+        "MoreMetadata": {
+          "type": "keyword"
+        },
+        "PrimaryPort": {
+          "type": "integer"
+        },
+        "RepresentationData": {
+          "type": "text"
+        },
+        "SecondaryPort": {
+          "type": "integer"
+        },
+        "SessionParameters": {
+          "type": "text"
+        },
+        "Transaction": {
+          "type": "date",
+          "ignore_malformed": true
+        },
+        "TransactionStatus": {
+          "type": "keyword"
+        },
+        "User": {
+          "type": "keyword",
+          "null_value": ""
+        },
+        "WorkServer": {
+          "type": "keyword"
+        },
+        "TransactionStartOffset": {
+          "type": "unsigned_long"
+        },
+        "Connection": {
+          "type": "unsigned_long"
+        },
+        "Session": {
+          "type": "unsigned_long"
+        }
+      }
+    },
+    "lifecycle": {
+      "enabled": true
+    }
+  },
+  "index_patterns": [
+    "onec-log-*"
+  ],
+  "data_stream": {},
+  "allow_auto_create": true
+}

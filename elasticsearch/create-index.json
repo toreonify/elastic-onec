@@ -1,0 +1,76 @@
+{
+	"settings": {
+		 "index": {
+			 "number_of_replicas": 0
+		 }
+	},
+	"mappings": {
+		"properties": {
+			"@timestamp" : {
+				"type": "date"
+			},
+			"Database" : {
+				"type": "keyword"
+			},
+			"TransactionStatus" : {
+				"type": "keyword"
+			},
+			"Transaction" : {
+				"type": "date",
+				"ignore_malformed": true
+			},
+			"TransactionStartOffset" : {
+				"type": "unsigned_long"
+			},
+			"User" : {
+				"type": "keyword",
+				"null_value": ""
+			},
+			"Computer" : {
+				"type": "keyword"
+			},
+			"Application" : {
+				"type": "keyword"
+			},
+			"Connection" : {
+				"type": "unsigned_long"
+			},
+			"Event" : {
+				"type": "keyword"
+			},
+			"Importance" : {
+				"type": "keyword"
+			},
+			"Comment" : {
+				"type": "text"
+			},
+			"Metadata" : {
+				"type": "keyword"
+			},
+			"Data" : {
+				"type": "text"
+			},
+			"RepresentationData" : {
+				"type": "text"
+			},
+			"WorkServer" : {
+				"type": "keyword"
+			},
+			"PrimaryPort" : {
+				"type": "integer"
+			},
+			"SecondaryPort" : {
+				"type": "integer"
+			},
+			"Session" : {
+				"type": "unsigned_long"
+			},
+			"MoreMetadata" : {
+				"type": "keyword"
+			},
+			"SessionParameters" : {
+				"type": "text"
+			}
+		}
+	}
+}

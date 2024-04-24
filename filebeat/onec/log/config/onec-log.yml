@@ -1,0 +1,17 @@
+type: log
+id: onec-log
+index: onec-log
+paths:
+{{ range $i, $path := .paths }}
+ - {{$path}}
+{{ end }}
+exclude_lines: ['^},?']
+multiline:
+  pattern: ^{[0-9]{14}
+  negate: true
+  match: after
+  max_lines: 100000
+processors:
+  - add_locale: ~
+close_inactive: 1m
+max_bytes: 20971520
