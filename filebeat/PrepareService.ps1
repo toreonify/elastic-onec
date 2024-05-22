@@ -15,7 +15,7 @@ if ($StartupParameters -and $ExecutablePath) {
 	}
 
 	if ($Update) {
-		sc.exe config 1cdsend binPath= "$ExecutablePath $StartupParameters"
+		sc.exe config 1cdsend binPath= "\`"$ExecutablePath\`" $StartupParameters"
 	} else {
 		New-Service -Name 1cdsend -BinaryPathName "$ExecutablePath $StartupParameters" -StartupType "Manual" -Description "Служба для отправки словарей журналов регистрации 1С в Logstash." -DisplayName "Отправка словарей журнала регистрации 1С"
 	}

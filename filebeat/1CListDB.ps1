@@ -52,12 +52,12 @@ if ($ListDatabases) {
 		foreach ($Match in $Matches) {
 			Write-Output "  - `"$LogsPath\$Match\1Cv8Log\*.lgp`""
 			
-			$DBPaths += " `"$LogsPath\$Match\1Cv8Log\1Cv8.lgf`""
+			$DBPaths += " `\```"$LogsPath\$Match\1Cv8Log\1Cv8.lgf`\```""
 		}
 		
 		if ($ScriptPath) {
-			Write-Output "1CSendDictionaries startup parameters:"
-			Write-Output "  `"$ScriptPath`" `"$DBListPath`"$DBPaths"
+			Write-Output "1CSendDictionaries startup parameters (for PowerShell use):"
+			Write-Output "  `"`\```"$ScriptPath`\```" `\```"$DBListPath`\```"$DBPaths`""
 		}
 	} else {
 		Write-Output "Please enter at least one database name."

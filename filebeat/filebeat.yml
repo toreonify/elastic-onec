@@ -30,7 +30,7 @@ setup.template.settings:
   #_source.enabled: false
 
 # ---------------------------- Elasticsearch Output ----------------------------
-#setup.ilm.enabled: true
+setup.ilm.enabled: false
 #setup.ilm.rollover_alias: "onec"
 #setup.ilm.pattern: "{now/d}-000001"
 setup.template.name: "onec"
