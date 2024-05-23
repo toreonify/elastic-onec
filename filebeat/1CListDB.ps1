@@ -50,7 +50,7 @@ if ($ListDatabases) {
 		
 		Write-Output "Filebeat logs path:"
 		foreach ($Match in $Matches) {
-			Write-Output "  - `"$LogsPath\$Match\1Cv8Log\*.lgp`""
+			Write-Output "  - $LogsPath\$Match\1Cv8Log\*.lgp"
 			
 			$DBPaths += " `\```"$LogsPath\$Match\1Cv8Log\1Cv8.lgf`\```""
 		}

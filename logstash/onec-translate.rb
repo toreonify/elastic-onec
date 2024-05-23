@@ -72,14 +72,19 @@ def filter(event)
   end
   event.set("Metadata", value_metadata)
 
-  # For now, only value of 0 and 1 were found
+  # Multiple Metadata objects can be sent
   moreMetadata = event.get('MoreMetadata')
 
-  id_moreMetadata = event.get('MoreMetadataId')
-  if moreMetadata == "0" or id_moreMetadata == "0"
+  array_moreMetadata = event.get('MoreMetadataArray')
+  if moreMetadata == "0"
     value_moreMetadata = nil
   else
-    value_moreMetadata = dict_metadata[id_moreMetadata].nil? ? id_moreMetadata : dict_metadata[id_moreMetadata]
+    array_moreMetadata = array_moreMetadata.split(',')
+    value_moreMetadata = Array.new
+
+    for id in array_moreMetadata do
+      value_moreMetadata.push(dict_metadata[id].nil? ? id : dict_metadata[id])
+    end
   end
   event.set("MoreMetadata", value_moreMetadata)
 
