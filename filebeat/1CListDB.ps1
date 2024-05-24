@@ -57,7 +57,7 @@ if ($ListDatabases) {
 		
 		if ($ScriptPath) {
 			Write-Output "1CSendDictionaries startup parameters (for PowerShell use):"
-			Write-Output "  `"`\```"$ScriptPath`\```" `\```"$DBListPath`\```"$DBPaths`""
+			Write-Output "  `"`\```"$ScriptPath`\```" `"$DBPaths`""
 		}
 	} else {
 		Write-Output "Please enter at least one database name."

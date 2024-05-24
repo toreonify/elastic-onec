@@ -26,8 +26,6 @@ $ErrorActionPreference = "Stop"
 Set-Variable -Name LogstashTCPAddress -Value 127.0.0.1
 Set-Variable -Name LogstashTCPPort -Value 12000
 
-Set-Variable -Name LockFilePath -Value "$env:TEMP\1CLogSend.lock"
-
 function Send-JsonOverTcp {
     param (
         [ValidateNotNullOrEmpty()]
@@ -56,35 +54,13 @@ function Send-Dictionaries {
     )
 
     $Event = @{
-        'service' = @{
-            'type' = 'onec'
-        }
-        'event' = @{
-            'module' = 'onec'
-            'dataset' = 'onec.map'
-        }
-        'input' = @{
-            'type' = 'log'
-        }
-        'fileset' = @{
-            'name' = 'map'
-        }
-        'log' = @{
-            'flags' = 'multiline'
-            'offset' = 0
-            'file' = @{
-                'path' = "$DictionaryPath"
-            }
-        }
-        '@version' = '1'
+        'dataset' = 'onec.map'
+        'path' = "$DictionaryPath"
         'message' = ''
-        'ecs' = @{
-            'version' = '8.0.0'
-        }
     }
 
     $content = Get-Content -Raw "$DictionaryPath"
-    $Event.message = $content.ToString().Replace("`r","");
+    $Event.message = $content.ToString().Replace("`r","")
 
     Send-JsonOverTcp -Server $LogstashTCPAddress -Port $LogstashTCPPort -Object $Event
 
@@ -97,38 +73,16 @@ function Send-DBList {
     )
 	
     $Event = @{
-        'service' = @{
-            'type' = 'onec'
-        }
-        'event' = @{
-            'module' = 'onec'
-            'dataset' = 'onec.dblist'
-        }
-        'input' = @{
-            'type' = 'log'
-        }
-        'fileset' = @{
-            'name' = 'dblist'
-        }
-        'log' = @{
-            'flags' = 'multiline'
-            'offset' = 0
-            'file' = @{
-                'path' = "$DBListPath"
-            }
-        }
-        '@version' = '1'
+        'dataset' = 'onec.dblist'
+        'path' = "$ListPath"
         'message' = ''
-        'ecs' = @{
-            'version' = '8.0.0'
-        }
     }
 
     $content = Get-Content -Raw "$ListPath"
     $List = Select-String '{([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{12}),"(.*?)",".*".".*"' -Input $content -AllMatches
 
     $content = $List.Matches | ForEach {Write-Output ('"' + $_.Groups[1].Value + '": "' + $_.Groups[2].Value + '"')}
-    $Event.message = ($content | Out-String).Replace("`r","");
+    $Event.message = ($content | Out-String).Replace("`r","")
     
     Send-JsonOverTcp -Server $LogstashTCPAddress -Port $LogstashTCPPort -Object $Event
 
@@ -142,7 +96,7 @@ function Log {
         $Message
     )
 	
-    Write-EventLog –LogName Application –Source "1CSendDictionaries" –EntryType $Type –EventID $ID –Message "$Message"
+    Write-EventLog -LogName Application -Source "1CSendDictionaries" -EntryType $Type -EventID $ID -Message "$Message"
 }
 
 try {

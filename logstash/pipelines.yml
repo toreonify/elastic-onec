@@ -1,0 +1,6 @@
+- pipeline.id: onec-map
+  pipeline.ecs_compatibility: disabled
+  path.config: "/etc/logstash/conf.d/onec-map.conf"
+
+- pipeline.id: onec-log
+  path.config: "/etc/logstash/conf.d/onec-log.conf"

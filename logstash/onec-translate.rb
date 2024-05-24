@@ -14,23 +14,49 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
+require "time"
 require "yaml"
+
+# ALT Linux doesn't ship updated gem for YAML/Psych that has support for default value
+# Provides a default empty value if dictionaries are not available for read or empty
+# That way, event will contain IDs and will be successfully sent to Elastic
+def safe_load(path)
+  count = 1
+
+  begin
+    dict = YAML.load_file(path)
+  rescue
+    if count < 3
+      count = count + 1
+      sleep(0.05)
+      retry
+    else
+      return {}
+    end
+  end
+
+  if dict.nil?
+    return {}
+  end
+
+  return dict
+end
 
 def filter(event)
   db_uuid = event.get("Database")
 
-  dict_db = YAML.load_file("/var/lib/logstash/onec-map/dblist.yml")
+  dict_db = safe_load("/var/lib/logstash/onec-map/dblist.yml")
   value_db = dict_db[db_uuid].nil? ? db_uuid : dict_db[db_uuid]
   event.set("Database", value_db)
 
-  dict_user = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/user.yml")
-  dict_computer = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/computer.yml")
-  dict_application = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/application.yml")
-  dict_event = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/event.yml")
-  dict_metadata = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/metadata.yml")
-  dict_server = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/server.yml")
-  dict_primaryPort = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/primary-port.yml")
-  dict_secondaryPort = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/secondary-port.yml")
+  dict_user = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/user.yml")
+  dict_computer = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/computer.yml")
+  dict_application = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/application.yml")
+  dict_event = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/event.yml")
+  dict_metadata = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/metadata.yml")
+  dict_server = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/server.yml")
+  dict_primaryPort = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/primary-port.yml")
+  dict_secondaryPort = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/secondary-port.yml")
 
   id_user = event.get('UserId')
   if id_user == "0"
@@ -146,8 +172,8 @@ def filter(event)
 
   value_sessionParameters = Array.new
 
-  dict_param = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/session-parameter.yml")
-  dict_param_values = YAML.load_file("/var/lib/logstash/onec-map/#{db_uuid}/session-parameters.yml")
+  dict_param = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/session-parameter.yml")
+  dict_param_values = safe_load("/var/lib/logstash/onec-map/#{db_uuid}/session-parameters.yml")
   sessionParameters = event.get("SessionParameters")
 
   if not sessionParameters.nil?
