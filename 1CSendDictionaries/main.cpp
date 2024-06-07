@@ -15,15 +15,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <windows.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <tchar.h>
-#include <stdint.h>
-#include <shlwapi.h>
+#include <windows.h>
 #include <strsafe.h>
 #include <stringapiset.h>
-#include <synchapi.h>
+#include <bcrypt.h>
 
 #define SHELL_PATH L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 #define CMD_LINE L" -File \"%s\" -FileName \"%s\""
@@ -31,28 +27,25 @@
 #define SOURCE_NAME "1CSendDictionaries"
 #define SERVICE_NAME TEXT("1cdsend")
 
-#define WATCH_BUF_SIZE 1024
+#define BUF_SIZE 1024
 #define EVENTLOG_MSG_SIZE 4096
 
 typedef struct watch {
-	LPWSTR fileName;
-	LPWSTR fullFileName;
-	FILETIME lastWriteTime;
-	HANDLE file;
-	uint8_t changeBuf[WATCH_BUF_SIZE];
-	OVERLAPPED overlapped;
+	LPWSTR filePath;
+
+	PBYTE currentHash;
+	PBYTE previousHash;
 } watch;
 
-void ProcessEvent(watch* w, size_t fileNameLength, wchar_t* fileName);
-void AddHandler(int num, LPWSTR filePath);
+void ProcessEvent(watch* w);
+void AddFile(int num, LPWSTR filePath);
 void LogEvent(WORD level, WORD type, DWORD id, const wchar_t* format, ...);
 void Cleanup();
 
 watch* watches;
-int handlesCount = 0;
-HANDLE* eventsHandles;
+int watchesCount = 0;
+
 LPWSTR scriptPath;
-DWORD lastAction = 0;
 
 int _argc = 0;
 wchar_t** _argv = NULL;
@@ -65,6 +58,13 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam);
 SERVICE_STATUS        ServiceStatus = { 0 };
 SERVICE_STATUS_HANDLE StatusHandle = NULL;
 HANDLE                ServiceStopEvent = INVALID_HANDLE_VALUE;
+
+void CalculateHash(watch* w);
+
+BCRYPT_ALG_HANDLE algorithm = NULL;
+BCRYPT_HASH_HANDLE hash = NULL;
+PBYTE hashObject = NULL;
+ULONG hashLength = 0;
 
 int wmain(int argc, wchar_t* argv[])
 {
@@ -105,7 +105,7 @@ VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode)
 
 		if (SetServiceStatus(StatusHandle, &ServiceStatus) == FALSE)
 		{
-			OutputDebugStringW(L"1CSendDictionaries: ServiceCtrlHandler: SetServiceStatus returned error");
+			OutputDebugStringW(L"1CSendDictionaries: SetServiceStatus returned error");
 		}
 
 		// This will signal the worker thread to start shutting down
@@ -121,16 +121,19 @@ VOID WINAPI ServiceCtrlHandler(DWORD CtrlCode)
 void LogEvent(WORD level, WORD type, DWORD id, const wchar_t* format, ...) {
 	wchar_t* message = (wchar_t*) malloc(sizeof(wchar_t) * (wcslen(format) + EVENTLOG_MSG_SIZE));
 	
-	va_list args;
-    va_start(args, format);
- 
-    StringCchVPrintfW(message, wcslen(format) + EVENTLOG_MSG_SIZE, format, args);
-	
-	va_end(args);
-	
-	ReportEventW(eventLog, level, type, id, NULL, 1, 0, (const wchar_t**)&message, NULL);
+	if (message != NULL)
+	{
+		va_list args;
+		va_start(args, format);
 
-	free(message);
+		StringCchVPrintfW(message, wcslen(format) + EVENTLOG_MSG_SIZE, format, args);
+
+		va_end(args);
+
+		ReportEventW(eventLog, level, type, id, NULL, 1, 0, (const wchar_t**)&message, NULL);
+
+		free(message);
+	}
 }
 
 VOID WINAPI ServiceMain(DWORD argc, wchar_t** argv)
@@ -157,7 +160,9 @@ VOID WINAPI ServiceMain(DWORD argc, wchar_t** argv)
 
 	if (SetServiceStatus(StatusHandle, &ServiceStatus) == FALSE)
 	{
-		OutputDebugStringW(L"1CSendDictionaries: ServiceMain: SetServiceStatus returned error");
+		wprintf(L"1CSendDictionaries: SetServiceStatus returned error");
+		Cleanup();
+		ExitProcess(1);
 	}
 
 	/*
@@ -177,7 +182,9 @@ VOID WINAPI ServiceMain(DWORD argc, wchar_t** argv)
 
 		if (SetServiceStatus(StatusHandle, &ServiceStatus) == FALSE)
 		{
-			OutputDebugStringW(L"1CSendDictionaries: ServiceMain: SetServiceStatus returned error");
+			wprintf(L"1CSendDictionaries: SetServiceStatus returned error");
+			Cleanup();
+			ExitProcess(1);
 		}
 
 		CloseHandle(StatusHandle);
@@ -192,44 +199,92 @@ VOID WINAPI ServiceMain(DWORD argc, wchar_t** argv)
 
 	if (SetServiceStatus(StatusHandle, &ServiceStatus) == FALSE)
 	{
-		wprintf(L"1CSendDictionaries: ServiceMain: SetServiceStatus returned error");
+		wprintf(L"1CSendDictionaries: SetServiceStatus returned error");
+		Cleanup();
+		ExitProcess(1);
 	}
 
 	// Initialization
 	eventLog = RegisterEventSource(NULL, SOURCE_NAME);
 
 	if (eventLog == NULL) {
-		wprintf(L"ERROR: RegisterEventSource function failed.\n");
-		ExitProcess(GetLastError());
+		wprintf(L"1CSendDictionaries: RegisterEventSource function failed.\n");
+		Cleanup();
+		ExitProcess(1);
 	}
 
 	LogEvent(EVENTLOG_SUCCESS, 1, 1000, L"1CSendDictionaries service started\n");
 
 	if (_argc < 3) {
 		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Not enough input parameters\n");
-		DeregisterEventSource(eventLog);
-		return;
+		Cleanup();
+		ExitProcess(1);
 	}
 
-	handlesCount = (_argc - 2);
-
-	if (handlesCount > MAXIMUM_WAIT_OBJECTS) {
-		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Too much input files (%i > %i)\n", handlesCount, MAXIMUM_WAIT_OBJECTS);
-		DeregisterEventSource(eventLog);
-		return;
+	DWORD rc = 0, status = 0;
+	status = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_HASH_REUSABLE_FLAG);
+	if (status != 0) {
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to open algorithm provider\n");
+		Cleanup();
+		ExitProcess(1);
 	}
 
-	watches = (watch*)malloc(sizeof(watch) * handlesCount);
-	eventsHandles = (HANDLE*)malloc(sizeof(HANDLE) * (handlesCount + 1)); // We need a service stop event to monitor as well
-	eventsHandles[handlesCount] = ServiceStopEvent;
+	ULONG hashObjectSize = 0, receivedBytes = 0;
+	status = BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PBYTE)&hashObjectSize, sizeof(ULONG), &receivedBytes, 0);
+	if (status != 0) {
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to get hash object size\n");
+		Cleanup();
+		ExitProcess(1);
+	}
 
+	hashObject = (PBYTE)HeapAlloc(GetProcessHeap(), 0, hashObjectSize);
+	if (hashObject == NULL)
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to allocate hash object on heap\n");
+		Cleanup();
+		ExitProcess(1);
+	}
+	memset(hashObject, 0, hashObjectSize);
+
+	status = BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH, (PBYTE)&hashLength, sizeof(ULONG), &receivedBytes, 0);
+	if (status != 0)
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to get hash length\n");
+		Cleanup();
+		ExitProcess(1);
+	}
+
+	status = BCryptCreateHash(algorithm, &hash, hashObject, hashObjectSize, NULL, 0, BCRYPT_HASH_REUSABLE_FLAG);
+	if (status != 0)
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to create hash object\n");
+		Cleanup();
+		ExitProcess(1);
+	}
+
+	watchesCount = (_argc - 2);
+	watches = (watch*)malloc(sizeof(watch) * watchesCount);
+	
 	scriptPath = (wchar_t*)malloc(sizeof(wchar_t) * (MAX_PATH + 1));
-	StringCchCopyW(scriptPath, MAX_PATH + 1, _argv[1]);
+	
+	if (scriptPath != NULL)
+	{
+		StringCchCopyW(scriptPath, MAX_PATH + 1, _argv[1]);
+	}
+	else
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to allocate memory\n");
+		Cleanup();
+		ExitProcess(1);
+	}
 
-	for (int i = 0; i < handlesCount; i++) {
-		AddHandler(i, _argv[i + 2]);
+	for (int i = 0; i < watchesCount; i++) {
+		AddFile(i, _argv[i + 2]);
 
-		ProcessEvent(&watches[i], wcslen(watches[i].fileName), watches[i].fileName);
+		CalculateHash(&watches[i]);
+		ProcessEvent(&watches[i]);
+
+		memcpy(watches[i].previousHash, watches[i].currentHash, hashLength);
 	}
 
 	// Start a thread that will perform the main task of the service
@@ -249,148 +304,60 @@ VOID WINAPI ServiceMain(DWORD argc, wchar_t** argv)
 
 	if (SetServiceStatus(StatusHandle, &ServiceStatus) == FALSE)
 	{
-		OutputDebugStringW(L"1CSendDictionaries: ServiceMain: SetServiceStatus returned error");
+		OutputDebugStringW(L"1CSendDictionaries: SetServiceStatus returned error");
+		ExitProcess(1);
 	}
 
 	return;
 }
 
-void AddHandler(int num, LPWSTR filePath) {
-	WCHAR* wFilePart;
-	WCHAR  dirPath[MAX_PATH + 1];
-
+void AddFile(int num, LPWSTR filePath) {
 	ZeroMemory(&(watches[num]), sizeof(watch));
 
-	DWORD retval = GetFullPathNameW(filePath, MAX_PATH, dirPath, &wFilePart);
+	watches[num].filePath = (wchar_t*)malloc(sizeof(wchar_t) * (wcslen(filePath) + 1));
 
-	watches[num].fullFileName = (wchar_t*)malloc(sizeof(wchar_t) * (wcslen(filePath) + 1));
-	watches[num].fileName = (wchar_t*)malloc(sizeof(wchar_t) * (wcslen(wFilePart) + 1));
+	StringCchCopyW(watches[num].filePath, wcslen(filePath) + 1, filePath);
 
-	StringCchCopyW(watches[num].fullFileName, wcslen(filePath) + 1, filePath);
-	StringCchCopyW(watches[num].fileName, wcslen(wFilePart) + 1, wFilePart);
-	PathRemoveFileSpecW(dirPath);
-
-	LogEvent(EVENTLOG_SUCCESS, 1, 1000, L"Added %s in %s for watching\n", watches[num].fileName, dirPath);
-
-	watches[num].file = CreateFileW(dirPath,
-		FILE_LIST_DIRECTORY,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		NULL,
-		OPEN_EXISTING,
-		FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-		NULL);
-
-	if (watches[num].file == INVALID_HANDLE_VALUE)
+	watches[num].currentHash = (PBYTE)HeapAlloc(GetProcessHeap(), 0, hashLength);
+	if (watches[num].currentHash == NULL)
 	{
-		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"\n ERROR: CreateFile function failed.\n");
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to allocate hash buffers on heap!\n");
+		Cleanup();
 		ExitProcess(GetLastError());
 	}
+	memset(watches[num].currentHash, 0, hashLength);
 
-	watches[num].overlapped.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-	eventsHandles[num] = watches[num].overlapped.hEvent;
-
-	BOOL success = ReadDirectoryChangesW(
-		watches[num].file, watches[num].changeBuf, WATCH_BUF_SIZE, FALSE,
-		FILE_NOTIFY_CHANGE_FILE_NAME |
-		FILE_NOTIFY_CHANGE_DIR_NAME |
-		FILE_NOTIFY_CHANGE_LAST_WRITE,
-		NULL, &(watches[num].overlapped), NULL);
-
-	if (eventsHandles[num] == INVALID_HANDLE_VALUE)
+	watches[num].previousHash = (PBYTE)HeapAlloc(GetProcessHeap(), 0, hashLength);
+	if (watches[num].previousHash == NULL)
 	{
-		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"\n ERROR: ReadDirectoryChangesW function failed.\n");
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to allocate hash buffers on heap!\n");
+		Cleanup();
 		ExitProcess(GetLastError());
 	}
+	memset(watches[num].previousHash, 0, hashLength);
+
+	LogEvent(EVENTLOG_SUCCESS, 1, 1000, L"Added %s for watching\n", watches[num].filePath);
 }
 
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 {
 	DWORD dwWaitStatus;
 
-	for (int i = 0; i < handlesCount; i++) {
-		if (eventsHandles[i] == NULL) {
-			LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"\n ERROR: Unexpected NULL from ReadDirectoryChangesW.\n");
-			return GetLastError();
-		}
-	}
-
 	while (TRUE) {
-		dwWaitStatus = WaitForMultipleObjects(handlesCount + 1, eventsHandles, FALSE, INFINITE);
+		dwWaitStatus = WaitForSingleObject(ServiceStopEvent, 500);
 
-		if (dwWaitStatus == WAIT_OBJECT_0 + handlesCount) {
+		if (dwWaitStatus == WAIT_OBJECT_0) {
 			LogEvent(EVENTLOG_WARNING_TYPE, 3, 1000, L"Stopping service\n");
 			break;
 		}
 
-		if (dwWaitStatus >= WAIT_OBJECT_0 && dwWaitStatus < WAIT_OBJECT_0 + handlesCount) {
-			int num = dwWaitStatus - WAIT_OBJECT_0;
-			DWORD bytes_transferred;
-			GetOverlappedResult(watches[num].file, &(watches[num].overlapped), &bytes_transferred, FALSE);
+		for (int i = 0; i < watchesCount; i++) {
+			CalculateHash(&watches[i]);
 
-			FILE_NOTIFY_INFORMATION* event = (FILE_NOTIFY_INFORMATION*)watches[num].changeBuf;
+			if (memcmp(watches[i].currentHash, watches[i].previousHash, hashLength) != 0) {
+				ProcessEvent(&watches[i]);
 
-			for (;;) {
-				DWORD name_len = event->FileNameLength / sizeof(wchar_t);
-
-				switch (event->Action) {
-				case FILE_ACTION_MODIFIED: {
-					lastAction = event->Action;
-					ProcessEvent(&watches[num], name_len, event->FileName);
-				} break;
-
-				case FILE_ACTION_ADDED: {
-					break;
-				}
-
-				case FILE_ACTION_REMOVED: {
-					break;
-				}
-
-				case FILE_ACTION_RENAMED_OLD_NAME: {
-					break;
-				}
-
-				case FILE_ACTION_RENAMED_NEW_NAME: {
-					// Simple and stupid: if new file is 1CV8Clst.lst, then it was renamed from 1CV8Clstn.lst and thus changed
-					// 1C doesn't write to a file directly and creates a temporary then renames it and also keeps and old version.
-					lastAction = event->Action;
-					ProcessEvent(&watches[num], name_len, event->FileName);
-					break;
-				}
-
-				default: {
-					LogEvent(EVENTLOG_WARNING_TYPE, 3, 1000, L"Unhandled action (0x%X, %.*s)!\n", event->Action, name_len, event->FileName);
-					break;
-				}
-				}
-
-				// Are there more events to handle?
-				if (event->NextEntryOffset) {
-					*((uint8_t**)&event) += event->NextEntryOffset;
-				}
-				else {
-					break;
-				}
-			}
-
-			// Queue the next event
-			ZeroMemory(&watches[num].changeBuf, WATCH_BUF_SIZE);
-			BOOL success = ReadDirectoryChangesW(
-				watches[num].file, watches[num].changeBuf, WATCH_BUF_SIZE, FALSE,
-				FILE_NOTIFY_CHANGE_FILE_NAME |
-				FILE_NOTIFY_CHANGE_DIR_NAME |
-				FILE_NOTIFY_CHANGE_LAST_WRITE,
-				NULL, &(watches[num].overlapped), NULL);
-		}
-		else {
-			switch (dwWaitStatus) {
-			case WAIT_TIMEOUT:
-				LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"\nNo changes in the timeout period.\n");
-				break;
-			default:
-				LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"\n ERROR: Unhandled dwWaitStatus.\n");
-				return GetLastError();
-				break;
+				memcpy(watches[i].previousHash, watches[i].currentHash, hashLength);
 			}
 		}
 	}
@@ -398,109 +365,115 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 	return ERROR_SUCCESS;
 }
 
-void ProcessEvent(watch* w, size_t fileNameLength, wchar_t* fileName)
+void CalculateHash(watch* w)
 {
-	wchar_t* tempName = (wchar_t*)malloc(sizeof(wchar_t) * (fileNameLength + 1));
-	StringCchCopyNW(tempName, fileNameLength + 1, fileName, fileNameLength);
+	BYTE fileBuf[BUF_SIZE];
+	DWORD fileRead;
 
-	if (_wcsicmp(tempName, w->fileName) == 0) {
-		if (lastAction == FILE_ACTION_MODIFIED) {
-			LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"File '%s' changed.\n", tempName);
-		}
-		if (lastAction == FILE_ACTION_RENAMED_NEW_NAME) {
-			LogEvent(EVENTLOG_INFORMATION_TYPE, 3, 1000, L"File '%s' renamed\n", tempName);
-		}
-		
-		int retries = 0;
-		HANDLE hFile = CreateFileW(w->fullFileName, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+	DWORD status, rc;
+	HANDLE file = CreateFileW(w->filePath, GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+		FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 
-		if (hFile == INVALID_HANDLE_VALUE)
-		{			
-			LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"CreateFile failed with %d\n", GetLastError());
-			goto end;
-		}
-	
-		FILETIME ftCreate, ftAccess, ftWrite;
-		BOOL result = GetFileTime(hFile, &ftCreate, &ftAccess, &ftWrite);
-
-		CloseHandle(hFile);
-		
-		if (!result)
-		{
-			LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to obtain last write time for '%s'.\n", tempName);
-			goto end;
-		}
-		
-		if (CompareFileTime(&w->lastWriteTime, &ftWrite) < 0) {
-			w->lastWriteTime = ftWrite;
-			
-			STARTUPINFOW si;
-			PROCESS_INFORMATION pi;
-			ZeroMemory(&si, sizeof(si));
-			si.cb = sizeof(si);
-			ZeroMemory(&pi, sizeof(pi));
-
-			wchar_t* cmdLine = (wchar_t*) malloc(sizeof(wchar_t) * (wcslen(CMD_LINE) + MAX_PATH));
-			StringCchPrintfW(cmdLine, wcslen(CMD_LINE) + MAX_PATH, CMD_LINE, scriptPath, w->fullFileName);
-			
-			LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"Command line is '%s'\n", cmdLine);
-
-			// Start the child process.
-			if (!CreateProcessW(
-				SHELL_PATH,
-				(LPWSTR)cmdLine,
-				NULL,           // Process handle not inheritable
-				NULL,           // Thread handle not inheritable
-				FALSE,          // Set handle inheritance to FALSE
-				0,              // No creation flags
-				NULL,           // Use parent's environment block
-				NULL,           // Use parent's starting directory
-				&si,            // Pointer to STARTUPINFO structure
-				&pi)            // Pointer to PROCESS_INFORMATION structure
-				)
-			{
-				LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"CreateProcess failed (%d).\n", GetLastError());
-			}
-			else
-			{
-				LogEvent(EVENTLOG_SUCCESS, 1, 1000, L"CreateProcess succeded.\n");
-			}
-			
-			WaitForSingleObject(pi.hProcess, INFINITE);
-
-			CloseHandle(pi.hProcess);
-			CloseHandle(pi.hThread);
-			
-			free(cmdLine);
-		} else {
-			LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"File '%s' last write time didn't change.\n", tempName);
-		}
-	} else {
-		// Kind of excessive, but if you want...
-		// LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"File is '%s' not in watch\n", tempName);
+	if (file == INVALID_HANDLE_VALUE) {
+		status = GetLastError();
+		goto done;
 	}
 
-	end:
-	free(tempName);
+	while (rc = ReadFile(file, fileBuf, BUF_SIZE, &fileRead, NULL))
+	{
+		if (rc == FALSE) {
+			LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to read file\n");
+			goto done;
+		}
+
+		if (0 == fileRead)
+		{
+			break;
+		}
+
+		status = BCryptHashData(hash, (PBYTE)&fileBuf, BUF_SIZE, 0);
+		if (status != 0)
+		{
+			LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to calculate hash\n");
+			goto done;
+		}
+	}
+
+	status = BCryptFinishHash(hash, w->currentHash, hashLength, 0);
+
+	if (status != 0)
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"Failed to finish hashing\n");
+		memcpy(w->currentHash, w->previousHash, hashLength);
+		goto done;
+	}
+
+	done:
+		CloseHandle(file);
+}
+
+void ProcessEvent(watch* w)
+{
+	SYSTEMTIME lt;
+	GetLocalTime(&lt);
+
+	LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"File '%s' changed at %02d-%02d-%02d %02d:%02d:%02d\n", w->filePath, lt.wDay, lt.wMonth, lt.wYear, lt.wHour, lt.wMinute, lt.wSecond);
+			
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	ZeroMemory(&pi, sizeof(pi));
+
+	wchar_t* cmdLine = (wchar_t*) malloc(sizeof(wchar_t) * (wcslen(CMD_LINE) + MAX_PATH));
+	StringCchPrintfW(cmdLine, wcslen(CMD_LINE) + MAX_PATH, CMD_LINE, scriptPath, w->filePath);
+			
+	LogEvent(EVENTLOG_INFORMATION_TYPE, 1, 1000, L"Command line is '%s'\n", cmdLine);
+
+	// Start the child process.
+	if (!CreateProcessW(
+		SHELL_PATH,
+		(LPWSTR)cmdLine,
+		NULL,           // Process handle not inheritable
+		NULL,           // Thread handle not inheritable
+		FALSE,          // Set handle inheritance to FALSE
+		0,              // No creation flags
+		NULL,           // Use parent's environment block
+		NULL,           // Use parent's starting directory
+		&si,            // Pointer to STARTUPINFO structure
+		&pi)            // Pointer to PROCESS_INFORMATION structure
+		)
+	{
+		LogEvent(EVENTLOG_ERROR_TYPE, 2, 1000, L"CreateProcess failed (%d).\n", GetLastError());
+	}
+	else
+	{
+		LogEvent(EVENTLOG_SUCCESS, 1, 1000, L"CreateProcess succeded.\n");
+	}
+			
+	WaitForSingleObject(pi.hProcess, INFINITE);
+
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+			
+	free(cmdLine);
+	
 	return;
 }
 
 void Cleanup() {
-	for (int i = 0; i < handlesCount; i++) {
-		if (eventsHandles[i] != NULL) {
-			CloseHandle(eventsHandles[i]);
+	for (int i = 0; i < watchesCount; i++) {	
+		if (watches[i].filePath != NULL) {
+			free(watches[i].filePath);
 		}
-		
-		if (watches[i].file != NULL) {
-			CloseHandle(watches[i].file);
+
+		if (watches[i].currentHash != NULL) {
+			HeapFree(GetProcessHeap(), 0, watches[i].currentHash);
 		}
-		
-		if (watches[i].fileName != NULL) {
-			free(watches[i].fileName);
-		}
-		
-		if (watches[i].fullFileName != NULL) {
-			free(watches[i].fullFileName);
+
+		if (watches[i].previousHash != NULL) {
+			HeapFree(GetProcessHeap(), 0, watches[i].previousHash);
 		}
 	}
 
@@ -514,5 +487,19 @@ void Cleanup() {
 	
 	if (ServiceStopEvent != NULL) {
 		CloseHandle(ServiceStopEvent);
+	}
+
+	if (algorithm != NULL)
+	{
+		BCryptCloseAlgorithmProvider(algorithm, 0);
+	}
+
+	if (hash != NULL)
+	{
+		BCryptDestroyHash(hash);
+	}
+
+	if (hashObject) {
+		HeapFree(GetProcessHeap(), 0, hashObject);
 	}
 }
